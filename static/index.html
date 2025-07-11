@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Skill Matrix Filler App</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        h1 { color: #0056b3; text-align: center; }
+        .container { display: flex; flex-wrap: wrap; gap: 25px; max-width: 1200px; margin: 0 auto; }
+        .column { flex: 1; min-width: 300px; background-color: #fff; padding: 25px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .section-title { font-weight: bold; margin-bottom: 15px; color: #007bff; font-size: 1.1em; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        label { display: block; margin-bottom: 8px; font-weight: 500; }
+        input[type="file"], input[type="text"] { width: calc(100% - 22px); padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        button { padding: 10px 20px; background-color: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; transition: background-color 0.2s; }
+        button:hover { background-color: #218838; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #messages { margin-top: 10px; padding: 5px 0; background-color: transparent; color: #333; }
+        #extractedData, #llmResponse, #filledTemplatePreviewArea, #docxHtmlPreview {
+            white-space: pre-wrap;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+            border: 1px dashed #ced4da;
+            min-height: 50px;
+            overflow-x: auto;
+            max-height: 400px; 
+            overflow-y: auto;
+        }
+        .preview-notification {
+            text-align: center;
+            font-style: italic;
+            color: #777;
+            padding: 10px;
+        }
+        .loading-spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #007bff;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            vertical-align: middle;
+            margin-left: 10px;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .download-link {
+            display: inline-block;
+            margin-top: 15px;
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        .download-link:hover { background-color: #0056b3; }
+        #docxHtmlPreview { display: none; }
+    </style>
+</head>
+<body>
+    <h1>Skill Matrix Filler App</h1>
+    <div class="container">
+        <div class="column">
+            <!-- UI Change: Simplified the upload section headings -->
+            <div class="section-title">Upload Resume</div>
+            <label for="resumeFile">Select Resume (PDF/DOC, DOCX):</label>
+            <input type="file" id="resumeFile" accept=".pdf,.doc,.docx" required><br>
+
+            <div class="section-title" style="margin-top: 20px;">Upload Template</div>
+            <label for="templateFile">Select Template (DOC, DOCX, PDF):</label> 
+            <input type="file" id="templateFile" accept=".pdf,.doc,.docx" required><br>
+            
+            <button id="uploadAndIngestButton">Upload & Ingest</button> 
+            <span class="loading-spinner" id="ingestSpinner"></span> 
+            <p id="messages"></p>
+
+            <div class="section-title" style="margin-top: 20px;">Template Filling</div>
+            <p>Once files are uploaded and ingested, click to fill the template.</p>
+            <button id="fillTemplateButton" disabled>Fill Template</button> 
+            <button id="refreshFillButton" disabled title="Re-run the template filling process for the current session." style="margin-left: 10px; background-color: #17a2b8;">Refresh</button>
+            <span class="loading-spinner" id="fillSpinner"></span>
+            
+            <div class="section-title" style="margin-top: 20px;">Filled Template Preview:</div>
+            <div id="filledTemplatePreviewArea">
+                <p class="preview-notification">Preview will appear here after filling.</p>
+                <a id="downloadLink" class="download-link" style="display: none;" target="_blank">Download Filled Resume</a>
+                <button id="previewToggleButton" style="margin-left: 10px; display: none;">Show Preview</button>
+            </div>
+            <div id="docxHtmlPreview"></div>
+
+            <div class="section-title" style="margin-top: 20px;">Extracted Resume Data (JSON Preview):</div>
+            <div id="extractedData">Awaiting data...</div>
+        </div>
+
+        <div class="column">
+            <div class="section-title">Q&A</div>
+            <p style="font-size: 0.9em; margin-bottom: 15px;">Ask questions about the uploaded resume or template (available after ingestion).</p>
+            <input type="text" id="llmQuestion" placeholder="Ask your question here...">
+            <button id="askButton" disabled>Ask</button> 
+            <span class="loading-spinner" id="askSpinner"></span>
+
+            <div class="section-title" style="margin-top: 20px;">Response:</div>
+            <div id="llmResponse"></div>
+        </div>
+    </div>
+
+    <script>
+        const BACKEND_URL = "http://127.0.0.1:8008";
+        let currentSessionId = null;
+        let currentFilledFilename = null;
+        let previewVisible = false;
+
+        function setButtonState(buttonId, spinnerId, enable, text = null) {
+            const button = document.getElementById(buttonId);
+            const spinner = document.getElementById(spinnerId);
+            if (button) button.disabled = !enable;
+            if (spinner) spinner.style.display = enable ? 'none' : 'inline-block';
+            if (text && button) button.textContent = text;
+        }
+
+        async function uploadAndIngest() {
+            const resumeFile = document.getElementById('resumeFile').files[0];
+            const templateFile = document.getElementById('templateFile').files[0];
+            const messagesDiv = document.getElementById('messages');
+            const extractedDataDisplay = document.getElementById('extractedData');
+            
+            document.getElementById('downloadLink').style.display = 'none';
+            document.getElementById('previewToggleButton').style.display = 'none';
+            document.getElementById('docxHtmlPreview').style.display = 'none';
+            document.getElementById('docxHtmlPreview').innerHTML = '';
+
+            setButtonState('uploadAndIngestButton', 'ingestSpinner', false, 'Processing...');
+            document.getElementById('fillTemplateButton').disabled = true;
+            document.getElementById('refreshFillButton').disabled = true;
+            document.getElementById('askButton').disabled = true;
+
+            messagesDiv.textContent = 'Processing files...';
+            extractedDataDisplay.textContent = 'Awaiting data...';
+            
+            if (!resumeFile || !templateFile) {
+                messagesDiv.textContent = "Please select both a resume and a template file.";
+                setButtonState('uploadAndIngestButton', 'ingestSpinner', true, 'Upload & Ingest');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('resume', resumeFile);
+            formData.append('template', templateFile);
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/upload_and_ingest`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentSessionId = data.session_id;
+                    messagesDiv.textContent = `Success! Session ID: ${currentSessionId}`;
+                    await fetchStructuredResumeData(currentSessionId);
+                    document.getElementById('fillTemplateButton').disabled = false;
+                    document.getElementById('refreshFillButton').disabled = false;
+                    document.getElementById('askButton').disabled = false;
+                } else {
+                    messagesDiv.textContent = `Error: ${data.error || 'Unknown error.'}`;
+                    extractedDataDisplay.textContent = 'Error during ingestion.';
+                    currentSessionId = null;
+                }
+            } catch (error) {
+                console.error('Fetch error during upload/ingest:', error);
+                messagesDiv.textContent = 'A network error occurred during upload/ingestion.';
+            } finally {
+                setButtonState('uploadAndIngestButton', 'ingestSpinner', true, 'Upload & Ingest');
+            }
+        }
+
+        async function fillTemplate() {
+            const messagesDiv = document.getElementById('messages');
+            const downloadLink = document.getElementById('downloadLink');
+            const toggleBtn = document.getElementById('previewToggleButton');
+            
+            setButtonState('fillTemplateButton', 'fillSpinner', false, 'Filling...');
+            document.getElementById('refreshFillButton').disabled = true; 
+
+            if (downloadLink) downloadLink.style.display = 'none';
+            if (toggleBtn) toggleBtn.style.display = 'none';
+            document.getElementById('docxHtmlPreview').style.display = 'none';
+
+            messagesDiv.textContent = 'Processing template...';
+
+            if (!currentSessionId) {
+                messagesDiv.textContent = "Error: Please upload and ingest files first.";
+                setButtonState('fillTemplateButton', 'fillSpinner', true, 'Fill Template');
+                document.getElementById('refreshFillButton').disabled = false;
+                return;
+            }
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/fill_template`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: currentSessionId }),
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    messagesDiv.textContent = `Template filled: ${data.filled_file_name}`;
+                    currentFilledFilename = data.filled_file_name;
+                    if (downloadLink) {
+                        downloadLink.href = `${BACKEND_URL}${data.download_url}`;
+                        downloadLink.textContent = `Download: ${data.filled_file_name}`;
+                        downloadLink.style.display = 'inline-block';
+                    }
+                    if (toggleBtn) {
+                        toggleBtn.style.display = 'inline-block';
+                        await previewFilledDoc(currentFilledFilename);
+                    }
+                } else {
+                    messagesDiv.textContent = `Error: ${data.error || 'Unknown error.'}`;
+                }
+            } catch (error) {
+                console.error('Fill template error:', error);
+                messagesDiv.textContent = 'A network error occurred during template filling.';
+            } finally {
+                setButtonState('fillTemplateButton', 'fillSpinner', true, 'Fill Template');
+                document.getElementById('refreshFillButton').disabled = false;
+            }
+        }
+
+        async function previewFilledDoc(filename) {
+            const htmlPreview = document.getElementById('docxHtmlPreview');
+            htmlPreview.innerHTML = '<p class="preview-notification">Loading preview...</p>';
+            try {
+                const response = await fetch(`${BACKEND_URL}/preview_filled_doc`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename })
+                });
+                const data = await response.json();
+                if (response.ok && data.html) {
+                    htmlPreview.innerHTML = data.html;
+                } else {
+                    htmlPreview.innerHTML = `<p class="preview-notification">Preview not available: ${data.error || 'Unknown error'}</p>`;
+                }
+            } catch (err) {
+                console.error('Preview error:', err);
+                htmlPreview.innerHTML = `<p class="preview-notification">Error loading preview.</p>`;
+            }
+        }
+
+        async function fetchStructuredResumeData(sessionId) {
+            const display = document.getElementById('extractedData');
+            display.textContent = 'Fetching structured resume data...';
+            try {
+                const response = await fetch(`${BACKEND_URL}/get_structured_resume_data`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    display.textContent = JSON.stringify(data.structured_resume_data, null, 2);
+                } else {
+                    display.textContent = `Error fetching data: ${data.error || 'Unknown error.'}`;
+                }
+            } catch (err) {
+                console.error('Fetch structured data error:', err);
+                display.textContent = 'Network error fetching structured data.';
+            }
+        }
+
+        async function askLLM() {
+            const question = document.getElementById('llmQuestion').value;
+            const responseDisplay = document.getElementById('llmResponse');
+            
+            setButtonState('askButton', 'askSpinner', false, 'Asking...');
+            responseDisplay.textContent = 'Thinking...';
+
+            if (!currentSessionId || !question.trim()) {
+                responseDisplay.textContent = !currentSessionId ? "Please upload files first." : "Please enter a question.";
+                setButtonState('askButton', 'askSpinner', true, 'Ask');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/ask`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question, session_id: currentSessionId })
+                });
+                const data = await response.json();
+                responseDisplay.textContent = data.answer || data.error || `[No answer returned]`;
+            } catch (error) {
+                console.error('Ask LLM error:', error);
+                responseDisplay.textContent = 'A network error occurred.';
+            } finally {
+                setButtonState('askButton', 'askSpinner', true, 'Ask');
+            }
+        }
+
+        function togglePreview() {
+            const htmlPreview = document.getElementById('docxHtmlPreview');
+            const toggleBtn = document.getElementById('previewToggleButton');
+            previewVisible = !previewVisible;
+            htmlPreview.style.display = previewVisible ? 'block' : 'none';
+            toggleBtn.textContent = previewVisible ? 'Hide Preview' : 'Show Preview';
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('uploadAndIngestButton').addEventListener('click', uploadAndIngest);
+            document.getElementById('fillTemplateButton').addEventListener('click', fillTemplate);
+            document.getElementById('refreshFillButton').addEventListener('click', fillTemplate);
+            document.getElementById('askButton').addEventListener('click', askLLM);
+            document.getElementById('previewToggleButton').addEventListener('click', togglePreview);
+            
+            document.getElementById('fillTemplateButton').disabled = true;
+            document.getElementById('refreshFillButton').disabled = true;
+            document.getElementById('askButton').disabled = true;
+        });
+    </script>
+</body>
+</html>

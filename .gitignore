@@ -1,0 +1,32 @@
+# Ignore uploaded files and filled docs
+uploads/
+filled_docs/
+
+# Ignore logs
+*.log
+logs/
+app.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+*.env
+
+# IDE/editor files
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Optional: virtual environment folder
+venv/
+env/
+
+# Ollama model cache (if saved locally)
+ollama_models/
+
